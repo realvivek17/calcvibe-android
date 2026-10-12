@@ -1,9 +1,11 @@
-name: CalcVibe Android Build
+name: CalcVibe Android Build and Launch Test
 
 on:
   workflow_dispatch:
   push:
     branches: [main, master]
+    paths:
+      - 'calcvibe-source-v2.zip'
 
 permissions:
   contents: read
@@ -13,55 +15,53 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-test:
-    name: Test and build Android APK
+  build-test-launch:
+    name: Build, unit-test, install and launch CalcVibe
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 55
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v6
 
       - name: Set up Java 17
-        uses: actions/setup-java@v6
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK tools
+      - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
           cmdline-tools-version: '15859902'
-          packages: ''
+          packages: 'platforms;android-35 build-tools;35.0.0 platform-tools emulator'
 
       - name: Install required Android SDK packages
         shell: bash
         run: |
           set -euo pipefail
-          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" "platform-tools" "emulator"
 
       - name: Set up Gradle 8.9
         uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '8.9'
 
-      - name: Validate source archive
+      - name: Validate and unpack source ZIP
         shell: bash
         run: |
           set -euo pipefail
-          test -s calcvibe-source.zip
-          unzip -t calcvibe-source.zip
-
-      - name: Unpack CalcVibe project archive
-        shell: bash
-        run: |
-          set -euo pipefail
+          test -s calcvibe-source-v2.zip
+          unzip -t calcvibe-source-v2.zip
+          rm -rf calcvibe-source
           mkdir -p calcvibe-source
-          unzip -q calcvibe-source.zip -d calcvibe-source
+          unzip -q calcvibe-source-v2.zip -d calcvibe-source
           test -f calcvibe-source/settings.gradle.kts
           test -f calcvibe-source/build.gradle.kts
           test -f calcvibe-source/app/build.gradle.kts
           test -f calcvibe-source/app/src/main/java/com/calcvibe/app/MainActivity.kt
+          test -s calcvibe-source/app/src/main/res/raw/tap_soft.wav
+          test -f calcvibe-source/scripts/android-smoke-test.sh
 
       - name: Run unit tests
         run: gradle -p calcvibe-source :app:testDebugUnitTest --no-daemon --stacktrace
@@ -73,7 +73,31 @@ jobs:
         shell: bash
         run: test -s calcvibe-source/app/build/outputs/apk/debug/app-debug.apk
 
+      - name: Launch app and test basic keypad in Android emulator
+        id: emulator-smoke
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          working-directory: calcvibe-source
+          script: bash scripts/android-smoke-test.sh
+
+      - name: Upload launch diagnostics (screenshot, hierarchy, logcat)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: calcvibe-launch-diagnostics
+          path: |
+            calcvibe-source/diagnostics/
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Upload debug APK
+        if: success()
         uses: actions/upload-artifact@v7
         with:
           name: calcvibe-debug-apk
